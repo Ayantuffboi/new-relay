@@ -1,5 +1,7 @@
 name = "new-relay"
+
 main = "worker.js"
+
 compatibility_date = "2026-09-17"
 
 [[durable_objects.bindings]]
