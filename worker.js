@@ -5,28 +5,24 @@ export { RelayRoom };
 export default {
     async fetch(request, env) {
 
-        const url =
-            new URL(request.url);
+        const upgrade =
+            request.headers.get("Upgrade");
 
-        /*
-         * Normal browser request.
-         */
-        if (
-            request.headers.get("Upgrade") !==
-            "websocket"
-        ) {
+        // Normal browser request
+        if (!upgrade || upgrade.toLowerCase() !== "websocket") {
+
             return new Response(
                 "Relay server online.",
                 {
                     status: 200,
                     headers: {
-                        "Content-Type":
-                            "text/plain"
+                        "Content-Type": "text/plain; charset=UTF-8"
                     }
                 }
             );
         }
 
+        // WebSockets must use GET
         if (request.method !== "GET") {
 
             return new Response(
@@ -37,9 +33,14 @@ export default {
             );
         }
 
+        const url =
+            new URL(request.url);
+
         const code =
             url.searchParams.get("code");
 
+        // Exactly 8 characters.
+        // Letters and numbers are allowed.
         if (!code || code.length !== 8) {
 
             return new Response(
@@ -50,9 +51,7 @@ export default {
             );
         }
 
-        /*
-         * Every code gets its own Durable Object.
-         */
+        // One Durable Object room per code.
         const id =
             env.RELAY_ROOM.idFromName(code);
 
