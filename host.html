@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Relay Host</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: #0d1117;
+            color: white;
+            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .container {
+            width: min(700px, 94%);
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 14px;
+            padding: 25px;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        h1 {
+            margin-top: 0;
+            text-align: center;
+        }
+
+        .code {
+            font-size: 42px;
+            font-weight: bold;
+            letter-spacing: 7px;
+            text-align: center;
+            padding: 20px;
+            margin: 20px 0;
+            background: #0d1117;
+            border-radius: 10px;
+            border: 1px solid #30363d;
+            word-break: break-all;
+        }
+
+        .status {
+            text-align: center;
+            margin: 15px 0;
+            color: #58a6ff;
+            font-size: 17px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            margin-top: 10px;
+            border: 0;
+            border-radius: 8px;
+            background: #238636;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #2ea043;
+        }
+
+        button.stop {
+            background: #da3633;
+        }
+
+        button.stop:hover {
+            background: #f85149;
+        }
+
+        .log {
+            margin-top: 20px;
+            background: #010409;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 12px;
+            height: 250px;
+            overflow-y: auto;
+            font-family: Consolas, monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+
+        .info {
+            color: #8b949e;
+            text-align: center;
+            margin-top: 15px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>Relay Host</h1>
+
+    <div id="code" class="code">
+        --------
+    </div>
+
+    <div id="status" class="status">
+        Ready.
+    </div>
+
+    <button id="startButton">
+        Start Host
+    </button>
+
+    <button id="stopButton" class="stop">
+        Stop Host
+    </button>
+
+    <div id="log" class="log"></div>
+
+    <div class="info">
+        Keep this page open while another device connects.
+    </div>
+
+</div>
+
+<script>
+
+const RELAY_URL =
+    "wss://my-relay.ayan6-4.workers.dev";
+
+let websocket = null;
+let peer = null;
+let controlChannel = null;
+let screenStream = null;
+
+let running = false;
+let code = "";
+
+const codeElement =
+    document.getElementById("code");
+
+const statusElement =
+    document.getElementById("status");
+
+const logElement =
+    document.getElementById("log");
+
+const startButton =
+    document.getElementById("startButton");
+
+const stopButton =
+    document.getElementById("stopButton");
+
+
+/*
+ * LOGGING
+ */
+
+function log(message) {
+
+    const time =
+        new Date().toLocaleTimeString();
+
+    const line =
+        "[" + time + "] " + message;
+
+    console.log(line);
+
+    logElement.textContent +=
+        line + "\n";
+
+    logElement.scrollTop =
+        logElement.scrollHeight;
+}
+
+
+function setStatus(message) {
+
+    statusElement.textContent =
+        message;
+
+    log(message);
+}
+
+
+/*
+ * GENERATE 8 CHARACTER CODE
+ *
+ * Allows:
+ * A-Z
+ * a-z
+ * 0-9
+ */
+
+function generateCode() {
+
+    const characters =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    let result = "";
+
+    for (let i = 0; i < 8; i++) {
+
+        result +=
+            characters[
+                Math.floor(
+                    Math.random() *
+                    characters.length
+                )
+            ];
+    }
+
+    return result;
+}
+
+
+/*
+ * CREATE NEW CODE
+ */
+
+function createCode() {
+
+    code =
+        generateCode();
+
+    codeElement.textContent =
+        code;
+
+    log(
+        "Generated 8-character code: " +
+        code
+    );
+}
+
+
+/*
+ * START HOST
+ */
+
+async function startHost() {
+
+    if (running) {
+
+        log(
+            "Host is already running."
+        );
+
+        return;
+    }
+
+    running = true;
+
+    createCode();
+
+    setStatus(
+        "Requesting screen sharing..."
+    );
+
+    /*
+     * ASK USER TO SHARE SCREEN
+     */
+
+    try {
+
+        screenStream =
+            await navigator.mediaDevices.getDisplayMedia({
+
+                video: {
+                    frameRate: {
+                        ideal: 60,
+                        max: 60
+                    }
+                },
+
+                audio: false
+
+            });
+
+        log(
+            "Screen sharing started."
+        );
+
+    } catch (error) {
+
+        running = false;
+
+        log(
+            "Screen sharing failed: " +
+            error.message
+        );
+
+        setStatus(
+            "Screen sharing cancelled."
+        );
+
+        return;
+    }
+
+
+    /*
+     * SCREEN SHARE ENDED
+     */
+
+    const videoTrack =
+        screenStream.getVideoTracks()[0];
+
+    if (videoTrack) {
+
+        videoTrack.addEventListener(
+            "ended",
+            () => {
+
+                log(
+                    "Screen sharing stopped by the browser."
+                );
+
+                stopHost();
+            }
+        );
+    }
+
+
+    /*
+     * CONNECT TO CLOUDFLARE RELAY
+     */
+
+    setStatus(
+        "Connecting to relay..."
+    );
+
+    const websocketURL =
+        RELAY_URL +
+        "?code=" +
+        encodeURIComponent(code);
+
+    log(
+        "Connecting to: " +
+        websocketURL
+    );
+
+    try {
+
+        websocket =
+            new WebSocket(
+                websocketURL
+            );
+
+        log(
+            "WebSocket object created."
+        );
+
+    } catch (error) {
+
+        log(
+            "WebSocket creation failed: " +
+            error.message
+        );
+
+        setStatus(
+            "WebSocket creation failed."
+        );
+
+        stopHost();
+
+        return;
+    }
+
+
+    /*
+     * WEBSOCKET OPEN
+     */
+
+    websocket.addEventListener(
+        "open",
+        () => {
+
+            log(
+                "SUCCESS: WebSocket connected!"
+            );
+
+            setStatus(
+                "Connected to relay. Waiting for another device..."
+            );
+
+            /*
+             * REGISTER AS HOST
+             */
+
+            const message = {
+
+                type: "host-register",
+
+                hostId: crypto.randomUUID()
+
+            };
+
+            websocket.send(
+                JSON.stringify(message)
+            );
+
+            log(
+                "Host registered with relay."
+            );
+
+        }
+    );
+
+
+    /*
+     * WEBSOCKET MESSAGE
+     */
+
+    websocket.addEventListener(
+        "message",
+        event => {
+
+            log(
+                "Relay message received: " +
+                event.data
+            );
+
+            handleRelayMessage(
+                event.data
+            );
+
+        }
+    );
+
+
+    /*
+     * WEBSOCKET ERROR
+     */
+
+    websocket.addEventListener(
+        "error",
+        event => {
+
+            console.error(
+                "WebSocket error:",
+                event
+            );
+
+            log(
+                "ERROR: WebSocket connection failed."
+            );
+
+            setStatus(
+                "WebSocket error."
+            );
+
+        }
+    );
+
+
+    /*
+     * WEBSOCKET CLOSE
+     */
+
+    websocket.addEventListener(
+        "close",
+        event => {
+
+            log(
+                "WebSocket closed."
+            );
+
+            log(
+                "Close code: " +
+                event.code
+            );
+
+            log(
+                "Close reason: " +
+                (
+                    event.reason ||
+                    "(none)"
+                )
+            );
+
+            if (running) {
+
+                setStatus(
+                    "Relay disconnected."
+                );
+
+            }
+
+        }
+    );
+
+}
+
+
+/*
+ * HANDLE RELAY MESSAGE
+ */
+
+async function handleRelayMessage(
+    rawMessage
+) {
+
+    let message;
+
+    try {
+
+        message =
+            JSON.parse(rawMessage);
+
+    } catch (error) {
+
+        log(
+            "Received invalid JSON."
+        );
+
+        return;
+    }
+
+
+    /*
+     * HOST ONLINE
+     */
+
+    if (
+        message.type ===
+        "host-online"
+    ) {
+
+        log(
+            "Relay says host is online."
+        );
+
+        return;
+    }
+
+
+    /*
+     * CLIENT ONLINE
+     */
+
+    if (
+        message.type ===
+        "client-online"
+    ) {
+
+        log(
+            "CLIENT CONNECTED!"
+        );
+
+        setStatus(
+            "Client connected. Waiting for client to become ready..."
+        );
+
+        return;
+    }
+
+
+    /*
+     * CLIENT READY
+     */
+
+    if (
+        message.type ===
+        "client-ready"
+    ) {
+
+        log(
+            "Client is ready."
+        );
+
+        await createPeerConnection();
+
+        return;
+    }
+
+
+    /*
+     * SIGNAL
+     */
+
+    if (
+        message.type ===
+        "signal"
+    ) {
+
+        await handleSignal(
+            message.data
+        );
+
+        return;
+    }
+
+
+    /*
+     * CLIENT OFFLINE
+     */
+
+    if (
+        message.type ===
+        "client-offline"
+    ) {
+
+        log(
+            "Client disconnected."
+        );
+
+        setStatus(
+            "Client disconnected."
+        );
+
+        closePeerConnection();
+
+        return;
+    }
+
+
+    /*
+     * HOST OFFLINE
+     */
+
+    if (
+        message.type ===
+        "host-offline"
+    ) {
+
+        log(
+            "Relay says host is offline."
+        );
+
+        return;
+    }
+
+
+    /*
+     * ERROR
+     */
+
+    if (
+        message.type ===
+        "error"
+    ) {
+
+        log(
+            "RELAY ERROR: " +
+            message.message
+        );
+
+        setStatus(
+            "Relay error."
+        );
+
+        return;
+    }
+
+
+    log(
+        "Unknown relay message type: " +
+        message.type
+    );
+
+}
+
+
+/*
+ * CREATE WEBRTC CONNECTION
+ */
+
+async function createPeerConnection() {
+
+    log(
+        "Creating WebRTC connection..."
+    );
+
+    if (peer) {
+
+        log(
+            "Closing previous WebRTC connection."
+        );
+
+        closePeerConnection();
+    }
+
+
+    peer =
+        new RTCPeerConnection({
+
+            iceServers: [
+
+                {
+                    urls:
+                        "stun:stun.cloudflare.com:3478"
+                },
+
+                {
+                    urls:
+                        "stun:stun.l.google.com:19302"
+                },
+
+                {
+                    urls:
+                        "stun:stun1.l.google.com:19302"
+                }
+
+            ]
+
+        });
+
+
+    /*
+     * ADD SCREEN TRACK
+     */
+
+    if (screenStream) {
+
+        for (
+            const track
+            of screenStream.getTracks()
+        ) {
+
+            peer.addTrack(
+                track,
+                screenStream
+            );
+
+            log(
+                "Added screen track: " +
+                track.kind
+            );
+
+        }
+
+    }
+
+
+    /*
+     * CREATE CONTROL CHANNEL
+     */
+
+    controlChannel =
+        peer.createDataChannel(
+            "control"
+        );
+
+    controlChannel.addEventListener(
+        "open",
+        () => {
+
+            log(
+                "Control data channel opened."
+            );
+
+        }
+    );
+
+    controlChannel.addEventListener(
+        "close",
+        () => {
+
+            log(
+                "Control data channel closed."
+            );
+
+        }
+    );
+
+
+    /*
+     * ICE CANDIDATE
+     */
+
+    peer.addEventListener(
+        "icecandidate",
+        event => {
+
+            if (
+                event.candidate
+            ) {
+
+                log(
+                    "Sending ICE candidate..."
+                );
+
+                sendSignal({
+
+                    type:
+                        "candidate",
+
+                    candidate:
+                        event.candidate
+
+                });
+
+            }
+
+        }
+    );
+
+
+    /*
+     * CONNECTION STATE
+     */
+
+    peer.addEventListener(
+        "connectionstatechange",
+        () => {
+
+            log(
+                "WebRTC state: " +
+                peer.connectionState
+            );
+
+            if (
+                peer.connectionState ===
+                "connected"
+            ) {
+
+                setStatus(
+                    "Connected! Screen is being streamed."
+                );
+
+            }
+
+            if (
+                peer.connectionState ===
+                "failed"
+            ) {
+
+                setStatus(
+                    "WebRTC connection failed."
+                );
+
+            }
+
+        }
+    );
+
+
+    /*
+     * ICE STATE
+     */
+
+    peer.addEventListener(
+        "iceconnectionstatechange",
+        () => {
+
+            log(
+                "ICE state: " +
+                peer.iceConnectionState
+            );
+
+        }
+    );
+
+
+    /*
+     * CREATE OFFER
+     */
+
+    log(
+        "Creating WebRTC offer..."
+    );
+
+    const offer =
+        await peer.createOffer();
+
+    await peer.setLocalDescription(
+        offer
+    );
+
+    log(
+        "Sending WebRTC offer..."
+    );
+
+    sendSignal({
+
+        type:
+            "offer",
+
+        sdp:
+            peer.localDescription.sdp
+
+    });
+
+}
+
+
+/*
+ * HANDLE WEBRTC SIGNAL
+ */
+
+async function handleSignal(
+    data
+) {
+
+    if (!peer) {
+
+        log(
+            "Received WebRTC signal before peer existed."
+        );
+
+        return;
+    }
+
+
+    /*
+     * ANSWER
+     */
+
+    if (
+        data.type ===
+        "answer"
+    ) {
+
+        log(
+            "Received WebRTC answer."
+        );
+
+        await peer.setRemoteDescription({
+
+            type:
+                "answer",
+
+            sdp:
+                data.sdp
+
+        });
+
+        log(
+            "Remote description set."
+        );
+
+        return;
+    }
+
+
+    /*
+     * ICE CANDIDATE
+     */
+
+    if (
+        data.type ===
+        "candidate"
+    ) {
+
+        try {
+
+            await peer.addIceCandidate(
+                data.candidate
+            );
+
+            log(
+                "Added remote ICE candidate."
+            );
+
+        } catch (error) {
+
+            log(
+                "ICE candidate error: " +
+                error.message
+            );
+
+        }
+
+        return;
+    }
+
+
+    log(
+        "Unknown WebRTC signal: " +
+        data.type
+    );
+
+}
+
+
+/*
+ * SEND SIGNAL THROUGH RELAY
+ */
+
+function sendSignal(
+    data
+) {
+
+    if (
+        !websocket ||
+        websocket.readyState !==
+        WebSocket.OPEN
+    ) {
+
+        log(
+            "Cannot send signal: WebSocket is not open."
+        );
+
+        return;
+    }
+
+    websocket.send(
+
+        JSON.stringify({
+
+            type:
+                "signal",
+
+            data:
+                data
+
+        })
+
+    );
+
+}
+
+
+/*
+ * CLOSE WEBRTC
+ */
+
+function closePeerConnection() {
+
+    if (controlChannel) {
+
+        try {
+            controlChannel.close();
+        } catch {}
+
+        controlChannel = null;
+    }
+
+    if (peer) {
+
+        try {
+            peer.close();
+        } catch {}
+
+        peer = null;
+    }
+
+}
+
+
+/*
+ * STOP HOST
+ */
+
+function stopHost() {
+
+    log(
+        "Stopping host..."
+    );
+
+    running = false;
+
+
+    closePeerConnection();
+
+
+    if (websocket) {
+
+        try {
+            websocket.close();
+        } catch {}
+
+        websocket = null;
+    }
+
+
+    if (screenStream) {
+
+        for (
+            const track
+            of screenStream.getTracks()
+        ) {
+
+            track.stop();
+
+        }
+
+        screenStream = null;
+    }
+
+
+    setStatus(
+        "Host stopped."
+    );
+
+}
+
+
+/*
+ * BUTTONS
+ */
+
+startButton.addEventListener(
+    "click",
+    startHost
+);
+
+stopButton.addEventListener(
+    "click",
+    stopHost
+);
+
+
+/*
+ * INITIALIZE
+ */
+
+createCode();
+
+log(
+    "Host page loaded."
+);
+
+log(
+    "Relay URL: " +
+    RELAY_URL
+);
+
+log(
+    "Ready to start."
+);
+
+</script>
+
+</body>
+</html>
