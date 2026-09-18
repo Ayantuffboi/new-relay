@@ -3,32 +3,40 @@ import { DurableObject } from "cloudflare:workers";
 export class RelayRoom extends DurableObject {
 
     constructor(ctx, env) {
+
         super(ctx, env);
 
+        this.ctx = ctx;
         this.env = env;
-
-        // Restore connections after hibernation.
-        this.ctx.getWebSockets().forEach(ws => {
-            const state = ws.deserializeAttachment();
-
-            if (state) {
-                // State is restored from the attachment.
-            }
-        });
     }
 
     async fetch(request) {
-        if (request.headers.get("Upgrade") !== "websocket") {
-            return new Response("WebSocket required.", {
-                status: 426
-            });
+
+        if (
+            request.headers.get("Upgrade") !==
+            "websocket"
+        ) {
+
+            return new Response(
+                "WebSocket required.",
+                {
+                    status: 426
+                }
+            );
         }
 
-        const pair = new WebSocketPair();
+        const pair =
+            new WebSocketPair();
 
-        const client = pair[0];
-        const server = pair[1];
+        const client =
+            pair[0];
 
+        const server =
+            pair[1];
+
+        /*
+         * Hibernatable WebSocket.
+         */
         this.ctx.acceptWebSocket(server);
 
         server.serializeAttachment({
@@ -43,52 +51,106 @@ export class RelayRoom extends DurableObject {
     }
 
     webSocketMessage(ws, message) {
+
         let data;
 
         try {
-            data = JSON.parse(message);
+
+            data =
+                JSON.parse(message);
+
         } catch {
+
             ws.send(JSON.stringify({
                 type: "error",
-                message: "Invalid JSON."
+                message: "Invalid message."
             }));
 
             return;
         }
 
-        const state = ws.deserializeAttachment() || {};
+        let state =
+            ws.deserializeAttachment() || {};
 
         /*
-         * HOST
+         * HOST REGISTER
          */
         if (data.type === "host-register") {
 
             state.role = "host";
-            state.hostId = data.hostId || crypto.randomUUID();
+
+            state.hostId =
+                data.hostId ||
+                crypto.randomUUID();
 
             ws.serializeAttachment(state);
 
-            this.sendToOthers(ws, {
-                type: "host-ready",
-                hostId: state.hostId
-            });
+            /*
+             * Tell any existing client.
+             */
+            for (
+                const other
+                of this.ctx.getWebSockets()
+            ) {
+
+                if (other === ws) {
+                    continue;
+                }
+
+                const otherState =
+                    other.deserializeAttachment();
+
+                if (
+                    otherState &&
+                    otherState.role === "client"
+                ) {
+
+                    other.send(JSON.stringify({
+                        type: "host-online"
+                    }));
+                }
+            }
 
             return;
         }
 
         /*
-         * CLIENT
+         * CLIENT REGISTER
          */
         if (data.type === "client-register") {
 
+            /*
+             * Only one client at a time.
+             */
+            const existingClient =
+                this.findRole("client");
+
+            if (
+                existingClient &&
+                existingClient !== ws
+            ) {
+
+                ws.send(JSON.stringify({
+                    type: "error",
+                    message: "This room is already in use."
+                }));
+
+                return;
+            }
+
             state.role = "client";
-            state.clientId = data.clientId || crypto.randomUUID();
+
+            state.clientId =
+                data.clientId ||
+                crypto.randomUUID();
 
             ws.serializeAttachment(state);
 
-            const host = this.findRole("host");
+            const host =
+                this.findRole("host");
 
             if (!host) {
+
                 ws.send(JSON.stringify({
                     type: "host-offline"
                 }));
@@ -101,15 +163,37 @@ export class RelayRoom extends DurableObject {
             }));
 
             host.send(JSON.stringify({
-                type: "client-online",
-                clientId: state.clientId
+                type: "client-online"
             }));
 
             return;
         }
 
         /*
-         * WEBRTC SIGNALING
+         * CLIENT READY
+         */
+        if (data.type === "client-ready") {
+
+            const host =
+                this.findRole("host");
+
+            if (host) {
+
+                host.send(JSON.stringify({
+                    type: "client-ready"
+                }));
+            }
+
+            return;
+        }
+
+        /*
+         * SIGNALING
+         *
+         * This includes:
+         * offer
+         * answer
+         * ICE candidates
          */
         if (data.type === "signal") {
 
@@ -118,48 +202,51 @@ export class RelayRoom extends DurableObject {
                     ? "client"
                     : "host";
 
-            const target = this.findRole(targetRole);
+            const target =
+                this.findRole(targetRole);
 
-            if (target) {
-                target.send(JSON.stringify({
-                    type: "signal",
-                    data: data.data
+            if (!target) {
+
+                ws.send(JSON.stringify({
+                    type: "error",
+                    message:
+                        "Other device is not connected."
                 }));
+
+                return;
             }
 
-            return;
-        }
-
-        /*
-         * PING
-         */
-        if (data.type === "ping") {
-
-            ws.send(JSON.stringify({
-                type: "pong"
+            target.send(JSON.stringify({
+                type: "signal",
+                data: data.data
             }));
 
             return;
         }
     }
 
-    sendToOthers(sender, message) {
-        for (const ws of this.ctx.getWebSockets()) {
-            if (ws !== sender && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(message));
-            }
-        }
-    }
-
     findRole(role) {
-        for (const ws of this.ctx.getWebSockets()) {
-            const state = ws.deserializeAttachment();
+
+        for (
+            const ws
+            of this.ctx.getWebSockets()
+        ) {
+
+            if (
+                ws.readyState !==
+                WebSocket.OPEN
+            ) {
+                continue;
+            }
+
+            const state =
+                ws.deserializeAttachment();
 
             if (
                 state &&
-                state.role === role &&
-                ws.readyState === WebSocket.OPEN
+                state.role === role
             ) {
+
                 return ws;
             }
         }
@@ -168,22 +255,34 @@ export class RelayRoom extends DurableObject {
     }
 
     webSocketClose(ws) {
-        const state = ws.deserializeAttachment();
+
+        const state =
+            ws.deserializeAttachment();
 
         if (!state) {
             return;
         }
 
         if (state.role === "host") {
-            this.sendToOthers(ws, {
-                type: "host-offline"
-            });
+
+            const client =
+                this.findRole("client");
+
+            if (client) {
+
+                client.send(JSON.stringify({
+                    type: "host-offline"
+                }));
+            }
         }
 
         if (state.role === "client") {
-            const host = this.findRole("host");
+
+            const host =
+                this.findRole("host");
 
             if (host) {
+
                 host.send(JSON.stringify({
                     type: "client-offline"
                 }));
@@ -192,8 +291,10 @@ export class RelayRoom extends DurableObject {
     }
 
     webSocketError(ws) {
-        try {
-            ws.close();
-        } catch {}
+
+        /*
+         * The Cloudflare runtime handles
+         * the connection lifecycle.
+         */
     }
 }
