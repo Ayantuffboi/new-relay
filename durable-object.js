@@ -3,7 +3,6 @@ import { DurableObject } from "cloudflare:workers";
 export class RelayRoom extends DurableObject {
 
     constructor(ctx, env) {
-
         super(ctx, env);
 
         this.ctx = ctx;
@@ -13,10 +12,9 @@ export class RelayRoom extends DurableObject {
     async fetch(request) {
 
         if (
-            request.headers.get("Upgrade") !==
-            "websocket"
+            request.headers.get("Upgrade")?.toLowerCase()
+            !== "websocket"
         ) {
-
             return new Response(
                 "WebSocket required.",
                 {
@@ -34,9 +32,8 @@ export class RelayRoom extends DurableObject {
         const server =
             pair[1];
 
-        /*
-         * Hibernatable WebSocket.
-         */
+        // Accept the server side as a
+        // hibernatable Durable Object WebSocket.
         this.ctx.acceptWebSocket(server);
 
         server.serializeAttachment({
@@ -49,6 +46,7 @@ export class RelayRoom extends DurableObject {
             webSocket: client
         });
     }
+
 
     webSocketMessage(ws, message) {
 
@@ -63,31 +61,37 @@ export class RelayRoom extends DurableObject {
 
             ws.send(JSON.stringify({
                 type: "error",
-                message: "Invalid message."
+                message: "Invalid JSON message."
             }));
 
             return;
         }
 
+
         let state =
             ws.deserializeAttachment() || {};
 
-        /*
-         * HOST REGISTER
-         */
+
+        // =====================================================
+        // HOST REGISTER
+        // =====================================================
+
         if (data.type === "host-register") {
 
             state.role = "host";
 
             state.hostId =
-                data.hostId ||
-                crypto.randomUUID();
+                data.hostId || crypto.randomUUID();
 
             ws.serializeAttachment(state);
 
-            /*
-             * Tell any existing client.
-             */
+            console.log(
+                "HOST REGISTERED:",
+                state.hostId
+            );
+
+
+            // Tell any connected client.
             for (
                 const other
                 of this.ctx.getWebSockets()
@@ -105,23 +109,27 @@ export class RelayRoom extends DurableObject {
                     otherState.role === "client"
                 ) {
 
-                    other.send(JSON.stringify({
-                        type: "host-online"
-                    }));
+                    try {
+
+                        other.send(JSON.stringify({
+                            type: "host-online"
+                        }));
+
+                    } catch {}
+
                 }
             }
 
             return;
         }
 
-        /*
-         * CLIENT REGISTER
-         */
+
+        // =====================================================
+        // CLIENT REGISTER
+        // =====================================================
+
         if (data.type === "client-register") {
 
-            /*
-             * Only one client at a time.
-             */
             const existingClient =
                 this.findRole("client");
 
@@ -132,11 +140,13 @@ export class RelayRoom extends DurableObject {
 
                 ws.send(JSON.stringify({
                     type: "error",
-                    message: "This room is already in use."
+                    message:
+                        "This room already has a client."
                 }));
 
                 return;
             }
+
 
             state.role = "client";
 
@@ -146,8 +156,10 @@ export class RelayRoom extends DurableObject {
 
             ws.serializeAttachment(state);
 
+
             const host =
                 this.findRole("host");
+
 
             if (!host) {
 
@@ -158,10 +170,14 @@ export class RelayRoom extends DurableObject {
                 return;
             }
 
+
+            // Tell client host exists.
             ws.send(JSON.stringify({
                 type: "host-online"
             }));
 
+
+            // Tell host client exists.
             host.send(JSON.stringify({
                 type: "client-online"
             }));
@@ -169,9 +185,11 @@ export class RelayRoom extends DurableObject {
             return;
         }
 
-        /*
-         * CLIENT READY
-         */
+
+        // =====================================================
+        // CLIENT READY
+        // =====================================================
+
         if (data.type === "client-ready") {
 
             const host =
@@ -182,19 +200,17 @@ export class RelayRoom extends DurableObject {
                 host.send(JSON.stringify({
                     type: "client-ready"
                 }));
+
             }
 
             return;
         }
 
-        /*
-         * SIGNALING
-         *
-         * This includes:
-         * offer
-         * answer
-         * ICE candidates
-         */
+
+        // =====================================================
+        // SIGNAL
+        // =====================================================
+
         if (data.type === "signal") {
 
             const targetRole =
@@ -202,8 +218,10 @@ export class RelayRoom extends DurableObject {
                     ? "client"
                     : "host";
 
+
             const target =
                 this.findRole(targetRole);
+
 
             if (!target) {
 
@@ -216,6 +234,7 @@ export class RelayRoom extends DurableObject {
                 return;
             }
 
+
             target.send(JSON.stringify({
                 type: "signal",
                 data: data.data
@@ -223,7 +242,19 @@ export class RelayRoom extends DurableObject {
 
             return;
         }
+
+
+        // =====================================================
+        // UNKNOWN MESSAGE
+        // =====================================================
+
+        ws.send(JSON.stringify({
+            type: "error",
+            message:
+                "Unknown message type."
+        }));
     }
+
 
     findRole(role) {
 
@@ -233,8 +264,7 @@ export class RelayRoom extends DurableObject {
         ) {
 
             if (
-                ws.readyState !==
-                WebSocket.OPEN
+                ws.readyState !== WebSocket.OPEN
             ) {
                 continue;
             }
@@ -254,7 +284,13 @@ export class RelayRoom extends DurableObject {
         return null;
     }
 
-    webSocketClose(ws) {
+
+    webSocketClose(
+        ws,
+        code,
+        reason,
+        wasClean
+    ) {
 
         const state =
             ws.deserializeAttachment();
@@ -263,6 +299,7 @@ export class RelayRoom extends DurableObject {
             return;
         }
 
+
         if (state.role === "host") {
 
             const client =
@@ -270,11 +307,17 @@ export class RelayRoom extends DurableObject {
 
             if (client) {
 
-                client.send(JSON.stringify({
-                    type: "host-offline"
-                }));
+                try {
+
+                    client.send(JSON.stringify({
+                        type: "host-offline"
+                    }));
+
+                } catch {}
+
             }
         }
+
 
         if (state.role === "client") {
 
@@ -283,18 +326,23 @@ export class RelayRoom extends DurableObject {
 
             if (host) {
 
-                host.send(JSON.stringify({
-                    type: "client-offline"
-                }));
+                try {
+
+                    host.send(JSON.stringify({
+                        type: "client-offline"
+                    }));
+
+                } catch {}
+
             }
         }
     }
 
+
     webSocketError(ws) {
 
-        /*
-         * The Cloudflare runtime handles
-         * the connection lifecycle.
-         */
+        console.error(
+            "WebSocket error"
+        );
     }
 }
